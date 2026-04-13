@@ -16,22 +16,21 @@ Contains all perfumes in my collection.
 
 Key columns:
 
-ID – unique perfume identifier
-Brand – perfume brand
-Name – fragrance name
-Fragrance_Type – category (e.g., floral, gourmand, woody)
-Season – best suited season(s)
-Notes – fragrance notes
-Size – bottle size
-Price – retail price
+- ID – unique perfume identifier
+- Brand – perfume brand
+- Name – fragrance name
+- Fragrance_Type – strength (eau de parfum, body spray, etc)
+- Notes – fragrance notes
+- Size – bottle size
+- Price – retail price
 
 ### Daily_Log.csv
 Tracks daily usage of perfumes.
 
 Key columns:
 
-Date – date worn
-ID – perfume ID worn that day
+- Date – date worn
+- ID – perfume ID worn that day
 
 ## Workflow
 ### Data Cleaning (R)
