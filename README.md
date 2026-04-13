@@ -34,22 +34,22 @@ Key columns:
 
 ## Workflow
 ### Data Cleaning (R)
-Imported and standardized perfume dataset
-Ensured consistent IDs across tables
-Cleaned missing or inconsistent values
+- Imported and standardized perfume dataset
+- Ensured consistent IDs across tables
+- Cleaned missing or inconsistent values
 ### Database Setup (SQL)
-Created relational tables:
-perfumes
-notes
-perfume_notes
+- Created relational tables:
+  - perfumes
+  - notes
+  - perfume_notes
 Linked perfumes to fragrance notes
 ### Analysis
-Aggregated daily wear data
-Joined usage logs with master dataset
-Created seasonal breakdowns
-Identified most frequently worn perfumes and notes
+- Aggregated daily wear data
+- Joined usage logs with master dataset
+- Created seasonal breakdowns
+- Identified most frequently worn perfumes and notes
 
 ## What's Next?
-Continue to record data so all seasons are accounted for
-I aim to create a declutter decision system to help me narrow down what to keep and what to not.
-Since I do have the price listed, I curious about a cost per wear analysis
+- Continue to record data so all seasons are accounted for
+- I aim to create a declutter decision system to help me narrow down what to keep and what to not.
+- Since I do have the price listed, I curious about a cost per wear analysis
