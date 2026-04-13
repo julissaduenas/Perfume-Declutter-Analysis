@@ -1,0 +1,371 @@
+---
+title: "Perfume Collection Analysis"
+author: "Julissa Dueñas"
+output:
+  html_document:
+    df_print: paged
+---
+
+## Goal
+
+As my perfume collection continued to grow, I wanted to take a more intentional, data-driven approach to curating it.
+
+The goal of this project is to streamline my collection, identify a small set of signature scents for each season, and uncover the fragrance notes I naturally gravitate toward based on my wear history.
+
+## Data
+
+The two data sets I used for this project are `Master_List.csv` and `Daily_Log.csv`. 
+`Master_List` contains my whole perfume collection. Each perfume has a unique ID, the brand of the fragrance, the name, the type (eau de toilette, body spray, etc.), all of its notes, which size I own, and the price.
+`Daily_Log` is my wear history: each row records a date from August 28, 2025 and the ID of the fragrance I wore that day (matching `Master_List`).
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+#prepare libraries
+
+library(DBI)
+library(RSQLite)
+library(tidyverse)
+library(janitor)
+
+#data
+master <- read_csv("Master_List.csv")%>% clean_names() #my perfume collection
+daily <- read_csv("Daily_Log.csv")%>% clean_names() #my wear history from 2025-08-28
+```
+
+### Data preparation
+Using the date from 'Daily_Log' I derived what season it was. I then split each comma-separated fragrance note into seprate rows and assigned each one its own unique ID so wears can be tied to individual notes 
+
+```{r echo=TRUE, message=FALSE, warning=FALSE, results='hide', fig.show='hide'}
+daily <- daily %>%
+  mutate(date = as.Date(date))
+daily <- daily %>%
+  mutate(date = as.Date(date),
+         season = case_when(
+           month(date) %in% c(12, 1, 2) ~ "Winter",
+           month(date) %in% c(3, 4, 5) ~ "Spring",
+           month(date) %in% c(6, 7, 8) ~ "Summer",
+           month(date) %in% c(9, 10, 11) ~ "Fall"
+         ))
+#Split notes
+notes_split <- master %>%
+  select(id, notes) %>%
+  separate_rows(notes, sep = ",") %>%
+  mutate(notes = str_trim(notes),
+         notes = tolower(notes)) %>%
+  distinct()
+
+notes_table <- notes_split %>%
+  distinct(notes) %>%
+  mutate(note_id = row_number()) %>%
+  rename(note_name = notes)
+
+perfume_notes <- notes_split %>%
+  left_join(notes_table, by = c("notes" = "note_name")) %>%
+  select(id, note_id)
+```
+### Database Setup
+I built a local SQLite database to store the cleaned data and answer my burning questions with SQL. 'perfumes' hold my collection, 'daily_wear_log' holds wears by date and season, Fragrance notes are normalizes into 'note' and 'perfume_notes' provides a bridge so one fragrance can map to multiple ntoes.
+```{r echo=TRUE, message=FALSE, warning=FALSE, results='hide', fig.show='hide'}
+con <- dbConnect(RSQLite::SQLite(), "perfume.sqlite")
+
+dbExecute(con, "
+CREATE TABLE perfumes (
+  id TEXT PRIMARY KEY,
+  brand TEXT,
+  name TEXT,
+  fragrance_type TEXT,
+  notes TEXT,
+  size TEXT,
+  price REAL
+);
+")
+dbExecute(con, "
+CREATE TABLE notes (
+  note_id INTEGER PRIMARY KEY,
+  note_name TEXT
+);
+")
+dbExecute(con, "
+CREATE TABLE perfume_notes (
+  id TEXT,
+  note_id INTEGER
+);
+")
+dbExecute(con, "
+CREATE TABLE daily_wear_log (
+  date TEXT,
+  id TEXT,
+  season TEXT
+);
+")
+dbWriteTable(con, "perfumes", master, append = TRUE)
+dbWriteTable(con, "notes", notes_table, append = TRUE)
+dbWriteTable(con, "perfume_notes", perfume_notes, append = TRUE)
+dbWriteTable(con, "daily_wear_log", daily, append = TRUE)
+```
+## Analysis: Now the fun part!
+### How big is my collection? How many full size perfumes do I have versus travel and sample sizes?
+
+```{r echo=TRUE}
+size_dist_raw <- dbGetQuery(con, "
+SELECT size, COUNT(*) AS count
+FROM perfumes
+GROUP BY size
+ORDER BY count DESC
+")
+
+total_perfumes <- sum(size_dist_raw$count)
+
+size_dist <- size_dist_raw %>%
+  mutate(
+    total = total_perfumes,
+    share_pct = round(100 * count / total, 1)
+  )
+```
+
+
+```{r echo=FALSE}
+levs <- unique(size_dist$size)
+n_sizes <- length(levs)
+pastel_fill <- rep(
+  c("#F5C4D8", "#B8D4E8", "#C8E6C9", "#FFF3B0", "#E4C9F0", "#FFD4B8", "#B8EBE6", "#DDD4C8"),
+  length.out = n_sizes
+)
+names(pastel_fill) <- levs
+size_dist %>%
+  mutate(
+    pct = count / sum(count),
+    slice_label = if_else(pct >= 0.035, as.character(count), ""),
+    size_f = factor(size, levels = levs)
+  ) %>%
+  ggplot(aes(x = "", y = pct, fill = size_f)) +
+  geom_col(width = 1, color = "white", linewidth = 0.5) +
+  coord_polar(theta = "y") +
+  geom_text(
+    aes(label = slice_label),
+    position = position_stack(vjust = 0.5),
+    size = 3.1,
+    color = "gray15",
+    fontface = "bold",
+    lineheight = 0.95
+  ) +
+  scale_fill_manual(values = pastel_fill, name = "Size") +
+  theme_void(base_size = 12) +
+  theme(
+    axis.text = element_blank(),
+    axis.title = element_blank(),
+    panel.grid = element_blank(),
+    plot.margin = margin(12, 12, 12, 12),
+    legend.position = "bottom",
+    legend.title = element_text(face = "bold")
+  ) +
+  labs(title = "Bottles by size")
+```
+
+In total, I have 192 perfume bottles (yikes). More than 51% of the collection is travel sized bottles.
+
+### What are my top 10 perfumes and the notes I am most reaching for?
+```{r}
+top10 <- dbGetQuery(con, "
+SELECT p.name, COUNT(*) as wears
+FROM daily_wear_log d
+JOIN perfumes p ON d.id = p.id
+GROUP BY p.name
+ORDER BY wears DESC
+LIMIT 10
+")
+top_notes <- dbGetQuery(con, "
+SELECT n.note_name, COUNT(*) as wears
+FROM daily_wear_log d
+JOIN perfume_notes pn ON d.id = pn.id
+JOIN notes n ON pn.note_id = n.note_id
+GROUP BY n.note_name
+ORDER BY wears DESC
+LIMIT 10
+")
+```
+
+```{r fig-top10-notes, echo=FALSE, fig.height=5, fig.keep="all", fig.width=6.5, out.width="100%"}
+pastel_palette <- c(
+  "#F5C4D8", "#B8D4E8", "#C8E6C9", "#FFF3B0", "#E4C9F0", "#FFD4B8", "#B8EBE6", "#DDD4C8"
+)
+
+theme_bars <- theme_minimal(base_size = 12) +
+  theme(
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor = element_blank(),
+    plot.title = element_text(face = "bold", size = 13)
+  )
+
+# Top 10 fragrances — separate plot; tight x-axis; most-worn at top of y-axis
+d_top10 <- top10 %>%
+  mutate(label = name, n = wears) %>%
+  arrange(desc(n)) %>%
+  mutate(
+    bar_fill = rep(pastel_palette, length.out = n())[row_number()],
+    label = fct_reorder(label, n)
+  )
+
+p_top10 <- ggplot(d_top10, aes(x = n, y = label, fill = bar_fill)) +
+  geom_col(width = 0.78, color = "white", linewidth = 0.45, show.legend = FALSE) +
+  scale_fill_identity() +
+  scale_x_continuous(
+    limits = c(0, max(d_top10$n) * 1.12),
+    expand = expansion(mult = c(0, 0.02))
+  ) +
+  theme_bars +
+  labs(
+    title = "Most-worn fragrances",
+    x = "Logged wears",
+    y = NULL
+  )
+
+print(p_top10)
+
+# Top notes — separate plot; default x padding for potentially wider spread
+d_notes <- top_notes %>%
+  mutate(label = note_name, n = wears) %>%
+  arrange(desc(n)) %>%
+  mutate(
+    bar_fill = rep(pastel_palette, length.out = n())[row_number()],
+    label = fct_reorder(label, n)
+  )
+
+p_top_notes <- ggplot(d_notes, aes(x = n, y = label, fill = bar_fill)) +
+  geom_col(width = 0.78, color = "white", linewidth = 0.45, show.legend = FALSE) +
+  scale_fill_identity() +
+  scale_x_continuous(expand = expansion(mult = c(0, 0.08))) +
+  theme_bars +
+  labs(
+    title = "Top Worn Notes",
+    x = "Wear-attributed note mentions",
+    y = NULL
+  )
+
+print(p_top_notes)
+```
+
+Being as I have 164 days of data, and I have worn a fragrance containing vanilla 107 times, I think it is more than fair to say vanilla earns the top spot
+
+### What does this look like by season?
+```{r}
+top_by_season<-dbGetQuery(con, "
+WITH ranked_perfumes AS (
+  SELECT 
+    d.season,
+    p.brand,
+    p.name,
+    COUNT(*) AS wear_count
+  FROM daily_wear_log d
+  JOIN perfumes p ON d.id = p.id
+  GROUP BY d.season, p.brand, p.name
+)
+SELECT *
+FROM (
+  SELECT *,
+         ROW_NUMBER() OVER (
+           PARTITION BY season
+           ORDER BY wear_count DESC
+         ) AS rank
+  FROM ranked_perfumes
+)
+WHERE rank <= 5
+ORDER BY season, rank;
+")
+top_notes_by_season <- dbGetQuery(con, "
+WITH note_counts AS (
+  SELECT 
+    d.season,
+    n.note_name,
+    COUNT(*) AS note_count
+  FROM daily_wear_log d
+  JOIN perfume_notes pn ON d.id = pn.id
+  JOIN notes n ON pn.note_id = n.note_id
+  GROUP BY d.season, n.note_name
+)
+SELECT *
+FROM (
+  SELECT *,
+         ROW_NUMBER() OVER (
+           PARTITION BY season
+           ORDER BY note_count DESC
+         ) AS rank
+  FROM note_counts
+)
+WHERE rank <= 10
+ORDER BY season, rank;
+")
+```
+
+```{r fig-seasonal-bars, echo=FALSE, fig.height=6, fig.keep="all", fig.width=8, out.width="100%"}
+# Reuse the same pastel palette used earlier
+
+theme_bars_season <- theme_minimal(base_size = 11) +
+  theme(
+    strip.text = element_text(face = "bold", size = 11),
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor = element_blank(),
+    plot.title = element_text(face = "bold", size = 13)
+  )
+
+# Seasonal top fragrances
+d_top_season <- top_by_season %>%
+  mutate(label = paste(brand, name, sep = " - ")) %>%
+  arrange(season, desc(wear_count)) %>%
+  group_by(season) %>%
+  mutate(
+    bar_fill = rep(pastel_palette, length.out = n())[row_number()],
+    label = fct_reorder(label, wear_count)
+  ) %>%
+  ungroup()
+
+p_top_season <- ggplot(d_top_season, aes(x = wear_count, y = label, fill = bar_fill)) +
+  geom_col(width = 0.75, color = "white", linewidth = 0.45, show.legend = FALSE) +
+  facet_wrap(~season, scales = "free_y", ncol = 2) +
+  scale_fill_identity() +
+  scale_x_continuous(expand = expansion(mult = c(0, 0.08))) +
+  theme_bars_season +
+  labs(
+    title = "Top Worn Perfumes by Season",
+    x = "Logged wears",
+    y = NULL
+  )
+
+print(p_top_season)
+
+# Seasonal top notes
+d_notes_season <- top_notes_by_season %>%
+  arrange(season, desc(note_count)) %>%
+  group_by(season) %>%
+  mutate(
+    bar_fill = rep(pastel_palette, length.out = n())[row_number()],
+    note_name = fct_reorder(note_name, note_count)
+  ) %>%
+  ungroup()
+
+p_notes_season <- ggplot(d_notes_season, aes(x = note_count, y = note_name, fill = bar_fill)) +
+  geom_col(width = 0.75, color = "white", linewidth = 0.45, show.legend = FALSE) +
+  facet_wrap(~season, scales = "free_y", ncol = 2) +
+  scale_fill_identity() +
+  scale_x_continuous(expand = expansion(mult = c(0, 0.08))) +
+  theme_bars_season +
+  labs(
+    title = "Top Notes by Season",
+    x = "Wear-attributed note mentions",
+    y = NULL
+  )
+
+print(p_notes_season)
+```
+I don't have too much data from Summer months just yet, but already, I see some floral and fruity notes coming in for the Spring months. I am curious to see how the notes differ based on the seasons.
+
+```{r eval=FALSE, include=FALSE}
+never_worn <- dbGetQuery(con, "
+SELECT p.name, p.size
+FROM perfumes p
+LEFT JOIN daily_wear_log d
+ON p.id = d.id
+WHERE d.id IS NULL
+")
+
+```
+
